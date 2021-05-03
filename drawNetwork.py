@@ -1,12 +1,15 @@
+from numpy.core.fromnumeric import nonzero
 from pymol import cmd, stored
 from pymol.cgo import *
+from pymol.vfont import plain
 import networkx as nx
 from Bio.PDB.Polypeptide import aa1, aa3
 import pickle as pkl
 import pickle5 as pkl5
 import numpy as np
 from pymol.selecting import select
-from scipy.sparse import csr_matrix, load_npz
+from pymol.viewing import label
+from scipy.sparse import csr_matrix, load_npz, dok_matrix
 from os.path import basename
 three2one = dict(zip(aa3, aa1))
 #letter2id = dict(zip([chr(ord('A') + i) for i in range(26)], list(map(str, range(26)))))
@@ -37,6 +40,30 @@ def create_top(selection, top):
             top_mat[atom.index, atom.residue.index] = 1
     top_mat = csr_matrix(top_mat)
     return top_mat
+
+# def divide_expected2(mat1, mat2):
+#     mat1, mat2 = list(map(dok_matrix, [mat1, mat2]))
+#     res = dok_matrix(mat1.shape)
+#     res[mat2.nonzero()] = mat1[mat2.nonzero()] / mat2[mat2.nonzero()]
+#     return res
+
+def divide_expected(mat1, mat2):
+    res = mat1 / mat2
+    res[np.isnan(res)] = 0
+    return res
+
+def get_connected_components(pertmat):
+    mat = np.abs(pertmat.copy())
+    net = nx.from_scipy_sparse_matrix(mat)
+    connected_components = [nx.number_connected_components(net)]
+    while mat.nnz !=0:
+        mat.data[np.argmin(mat.data)] = 0
+        mat.eliminate_zeros()
+        net = nx.from_scipy_sparse_matrix(mat)
+        net.remove_nodes_from(list(nx.isolates(net)))
+        connected_components.append(nx.number_connected_components(net))
+    return connected_components[:-1]
+
 
 def drawHydroPolar(path1, path2, threshold=0, edge_norm=None, scale_norm=True, norm_expected=False, **kwargs):
 
@@ -86,9 +113,11 @@ def drawHydroPolar(path1, path2, threshold=0, edge_norm=None, scale_norm=True, n
 
 def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2=None,
                 r=1, edge_norm=None, alpha=0.5, mutations=False, sum=False,
-                node_color=(0.6, 0.6, 0.6), edge_color1 = (0, 0, 1), 
+                node_color=(0.6, 0.6, 0.6), edge_color1 = (0, 0, 1),
                 edge_color2 = (1, 0, 0), labelling='0', norm_expected=False,
-                threshold=0, topk=None, around=None, keep_previous=False, 
+                threshold=0, topk=None, max_compo=None, mean_vp=None, 
+                around=None, keep_previous=False, robust_compo=False,
+                label_compo=False, auto_patch=True,
                 name1 = None, name2 = None, name_nodes='nodes'):
     '''
     Draws a NetworkX network on the PyMol structure
@@ -102,13 +131,34 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
     # Building position -- name correspondance
     stored.posCA = []
     stored.names = []
+    stored.ss = []
     userSelection = userSelection + " and ((n. CA) or n. C)"
     cmd.iterate_state(1, selector.process(userSelection), "stored.posCA.append([x,y,z])")
+    cmd.iterate(userSelection, "stored.ss.append(ss)")
     cmd.iterate(userSelection, 'stored.names.append(resn+resi+chain)')
     stored.labels = list(map(relabel, stored.names))
     stored.resid = list(map(selection, stored.names))
     node2id = dict(zip(stored.labels, stored.resid))
     node2CA = dict(zip(stored.labels, stored.posCA))
+
+    #Secondary Structure labels
+    sses = []
+    currentSS, currentChain = stored.ss[0], stored.labels[0][-1]
+    if currentSS == '':
+        currentSS = 'L'
+    counters = {'L': 1, 'H': 1, 'S': 1}
+    for ss, label in zip(stored.ss, stored.labels):
+        if ss == '':
+            ss = 'L'
+        if currentSS != ss:
+            counters[currentSS] +=1
+        if currentChain != label[-1]:
+            for counter in counters: counters[counter] = 1
+        sses.append(label[-1]+ss+str(counters[ss]))
+        currentSS = ss
+        currentChain = label[-1]
+    print(sses)
+    node2SS = dict(zip(stored.labels, sses))
 
     #Loading external data
     mat1, mat2 = list(map(load, [path1, path2]))
@@ -135,9 +185,12 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
     mat2 = (mat2 @ topd2).transpose() @ topg2
     #Apply expected norm if necessary
     if norm_expected:
-        ones = csr_matrix(np.ones([topg1.shape[0]]*2))
-        mat1 /= (ones @ topd1).transpose() @ topg1
-        mat2 /= (ones @ topd2).transpose() @ topg2
+        ones1 = np.ones([topg1.shape[0]]*2)
+        ones2 = np.ones([topg2.shape[0]]*2)
+#        mat1 /= (ones1 @ topd1).transpose() @ topg1
+#        mat2 /= (ones2 @ topd2).transpose() @ topg2
+        mat1 = divide_expected(mat1, (ones1 @ topd1).transpose() @ topg1)
+        mat2 = divide_expected(mat2, (ones2 @ topd2).transpose() @ topg2)
         mat1, mat2 = list(map(csr_matrix, [mat1, mat2]))
     pertmat = mat2 - mat1
 
@@ -160,12 +213,43 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
     res2str = lambda X: t2o(X.name)+str(X.resSeq+offset)+':'+get_chain(X)
     id2label = {i: res2str(res) for i, res in enumerate(top1.residues)}
 
+    #Relabelling network
+    net = nx.relabel_nodes(net, id2label)
+
+    #Auto_patching network labels
+    if not all(elem in node2CA for elem in net.nodes()):
+        print('PDB structure and topology labelling not matching.')
+        if auto_patch:
+            print('Attempting to auto-patch residue names. (this can be disabled with auto_patch=False)')
+            if len(node2CA.keys()) == len(net.nodes()):
+                remap = dict(zip(net.nodes(), node2CA.keys()))
+                net = nx.relabel_nodes(net, remap)
+            else:
+                print("Auto-patching not working, please try on a different .pdb")
+
     #Output topK if necessary
     if type(topk) == int:
         limit_weight = np.sort([abs(net.edges[(u, v)]['weight']) for u, v in net.edges])[::-1][:topk]     
         threshold = limit_weight
 
-    #Detect mutations
+    if max_compo or mean_vp or robust_compo:
+        cc = get_connected_components(pertmat)
+        if max_compo:
+            threshold = np.sort(np.abs(pertmat.data))[::-1][np.argmax(cc[::-1])]
+        else:
+            lastmax = np.sort(np.abs(pertmat.data))[::-1][np.argmax(cc[::-1])]
+            net.remove_edges_from([(u, v) for u, v in net.edges() if abs(net[u][v]['weight']) < lastmax])
+            net.remove_nodes_from(list(nx.isolates(net)))
+            components_list = [net.subgraph(c).copy() for c in nx.connected_components(net)] 
+            if mean_vp:
+                vanishing_points = [np.max([abs(net[u][v]['weight']) for u, v in c.edges()]) for c in components_list]
+                threshold = np.median(vanishing_points)
+            elif robust_compo:
+                robust = [list(c.nodes()) for c in components_list if len(c.edges())>=4]
+                net = net.subgraph([x for robust in list(robust) for x in robust])
+                threshold = 0
+
+   #Detect mutations
     if mutations:
         cmd.show_as(representation="cartoon", selection="?mutations")
         cmd.color(color="grey80", selection="?mutations")
@@ -183,24 +267,22 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
         cmd.show_as(representation="licorice", selection="?mutations")
         cmd.color(color="magenta", selection="?mutations")
 
-    #Relabelling network
-    net = nx.relabel_nodes(net, id2label)
 
     #Apply threshold
     if threshold !=0:
+        print('Applying threshold {}'.format(threshold))
         net.remove_edges_from([(u, v) for u, v in net.edges() if abs(net[u][v]['weight']) < threshold])
+        net.remove_nodes_from(list(nx.isolates(net)))
 
     #Induced perturbation network if needed
 
     if around !=None:
         net = net.subgraph(nx.node_connected_component(net, around))
 
-
-
     #Setting Pymol parameters
     cmd.set('auto_zoom', 0)
     cmd.set("cgo_sphere_quality", 4)
-    print(node2CA)
+
 
     #Creating edges
     if edge_norm == None:
@@ -219,9 +301,7 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
                     obj1+=[CYLINDER, *node2CA[u], *node2CA[v], radius, *edge_color1, *edge_color1]
                 else:
                     obj2+=[CYLINDER, *node2CA[u], *node2CA[v], radius, *edge_color2, *edge_color2]
-
             nodelist+=[u, v]
-
 
     #Creating nodes
     obj=[COLOR, *node_color]
@@ -230,6 +310,24 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
     for u in nodelist:
         x, y, z = node2CA[u]
         obj+=[SPHERE, x, y, z, r]
+
+
+    #Creating text for labelling components
+    if label_compo:
+        objtxt = []
+        axes = -np.array(cmd.get_view()[:9]).reshape(3,3)
+        components_list = [net.subgraph(c).copy() for c in nx.connected_components(net)]
+        edges_len = [len(c.edges()) for c in components_list]
+        for i, j in enumerate(np.argsort(edges_len)[::-1]):
+            c = components_list[j]
+            sses = sorted(list(set([node2SS[node] for node in c])))
+            print('Component {}\n'.format(i+1), ' '.join(sses))
+            pos = np.array(node2CA[next(c.__iter__())]) + (axes[0])
+            cyl_text(objtxt, plain, pos, 'Component {}'.format(i+1), radius=0.1, color=[0, 0, 0], axes=axes)
+
+#        print(objtxt)
+        cmd.set("cgo_line_radius", 0.03)
+        cmd.load_cgo(objtxt, 'txt')
 
     #Labelling
     if labelling==1:
@@ -252,6 +350,7 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
     #Summing
     if sum:
         print('Sum of contacts lost: ', np.sum(pertmat))
+
 
 cmd.extend("drawNetwork", drawNetwork)
 cmd.extend("drawHydroPolar", drawHydroPolar)

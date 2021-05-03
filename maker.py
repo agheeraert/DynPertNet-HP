@@ -97,12 +97,9 @@ class AtomicNetMaker():
 #     pool.starmap(AtomicNetMaker, zip(traj_list, topo_list, [selection]*n_trajs, [cutoff]*n_trajs, [chunk]*n_trajs, output_atomic_list))
 
 def create_atomic_multi(traj_list, topo_list, name_list, output_folder, selection='protein', cutoff=5, chunk=1000):
-    n_trajs = len(traj_list)
     output_atomic_list = [jn(output_folder, '{0}.anpy'.format(name)) for name in name_list]
     for traj, topo, output_atomic in zip(traj_list, topo_list, output_atomic_list):
         AtomicNetMaker(traj, topo, selection, cutoff, chunk, output_atomic)
-
-
 
 
 def save_top(traj_list, topo_list, name_list, output_list, selection='protein'):
@@ -128,8 +125,13 @@ def create_top_mat(selection, top, subselection='protein'):
     top_mat = csr_matrix(top_mat)
     return top_mat
 
+def divide_expected(mat1, mat2):
+    res = mat1 / mat2
+    res[np.isnan(res)] = 0
+    return res
 
-def compute_interface(filename, top, chain1=None, chain2=None):
+
+def compute_interface(filename, top,  expected=True, chain1=None, chain2=None):
     if chain1 == None and chain2 == None:
         sels = ['chainid 0', 'chainid 1']
     else:
@@ -141,10 +143,20 @@ def compute_interface(filename, top, chain1=None, chain2=None):
         try:
             while True:
                 atomicContacts = pkl.load(fr)
+                if expected:
+                    ones = np.ones([topg.shape[0]]*2)
+                    evalue = (ones @ topd).transpose() @ topg
                 for mat in atomicContacts:
-                    contact.append(np.sum(mat.dot(topd).transpose().dot(topg)))
-        except EOFError:
-            pass
+                    to_app = (mat @ topd).transpose() @ topg
+                    if expected:
+                        to_app = divide_expected(to_app, evalue)
+                    contact.append(np.sum(to_app))
+        except Exception as e:
+            if e == EOFError:
+                pass
+            else:
+                print(e) 
+
     return contact
 
 def average_pickle(filename, output=None):
@@ -184,20 +196,16 @@ def average_list(file_list, output_total, output_list=[None]):
     pkl.dump(tot_avg, open(output_total, 'wb'))
         
 
-def plot_interfaces(input_list, topo_list, name_list):
+def plot_interfaces(input_list, topo_list, name_list, expected=False, **kwargs):
     n_trajs = len(input_list)
     i2color =  dict(zip(range(n_trajs), sns.color_palette("colorblind", n_trajs)))
     n_cpu = mp.cpu_count()
     pool = mp.Pool(processes=min(n_cpu, len(input_list)))
-    contacts = pool.starmap(compute_interface, zip(input_list, topo_list))
+    contacts = pool.starmap(compute_interface, zip(input_list, topo_list, [expected]*len(input_list)))
     fig, ax = plt.subplots(1, 1)
     for i, contact in enumerate(contacts):
-        ax.plot(contact, color=i2color[i], label=name_list[i])
-    return fig
-
-
-
-
+        ax.plot(contact, color=i2color[i], label=name_list[i], **kwargs)
+    return contacts
 
         
         
