@@ -1,6 +1,7 @@
-from os import name
+from os import name, makedirs as mkdir
 from itertools import zip_longest
 import numpy as np
+from numpy.core.numeric import indices
 from scipy.spatial import cKDTree
 import mdtraj as md
 import pickle as pkl
@@ -15,13 +16,56 @@ three2one = dict(zip(aa3, aa1))
 t2o = lambda X: three2one[X] if X in three2one else X[0]
 label =  lambda X: t2o(X.name)+str(X.index)
 from tqdm import tqdm
-from scipy.sparse import csr_matrix, save_npz
+from scipy.sparse import csr_matrix, save_npz, lil_matrix, coo_matrix
 import seaborn as sns
+from time import time
 
 
 plt.style.use('default')
 import matplotlib as mpl
 mpl.rc('figure', fc = 'white')
+
+def avg_sparse(list_of_matrices, size, matrix_generator=np.zeros, n_frames=None, size2=None):
+    size2 = size if size2==None else size2
+    try:
+        avg = matrix_generator((size, size))
+        if type(list_of_matrices[0]) == tuple:
+            n_frames = np.sum(elt[1] for elt in list_of_matrices) if n_frames==None else n_frames
+            for mat, fact in list_of_matrices:
+                avg[mat.nonzero()] += mat.data*fact
+        else:
+            n_frames = len(list_of_matrices) if n_frames==None else n_frames
+            for mat in list_of_matrices:
+                avg[mat.nonzero()] += mat.data
+        avg = csr_matrix(avg)
+        avg /= n_frames
+        return avg
+    except MemoryError:
+        print('\n System too big, computing average in sparse format (slower)')
+        return avg_coo(list_of_matrices, size, n_frames=n_frames, size2=size2)
+
+def avg_coo(list_of_matrices, size, n_frames=None, size2=None):
+    size2 = size if size2==None else size2
+    row, col, data = [], [], []
+    if type(list_of_matrices[0]) == tuple:
+        n_frames = np.sum(elt[1] for elt in list_of_matrices) if n_frames==None else n_frames
+        for mat, fact in list_of_matrices:
+            _row, _col = mat.nonzero()
+            row += _row.tolist()
+            col += _col.tolist() 
+            _data = mat.data*fact
+            data += _data.tolist()
+    else:
+        n_frames = len(list_of_matrices) if n_frames==None else n_frames
+        for mat in list_of_matrices:
+            _row, _col = mat.nonzero()
+            row += _row.tolist()
+            col += _col.tolist() 
+            data += mat.data.tolist()
+    avg = coo_matrix((data, (row, col)), shape=(size, size2))
+    avg = csr_matrix(avg)
+    avg /= n_frames
+    return avg
 
 
 class AtomicNetMaker():
@@ -59,25 +103,15 @@ class AtomicNetMaker():
                 atomicContacts = [self.queue.get() for p in processes]
                 if output != None:
                     pkl.dump(atomicContacts, open('{0}_{1}.p'.format(output, j), 'ab+'))         
-                
                 #Computing average atomic network from list of csr matrices
-                chunk_avg = np.zeros((self.n_atoms, self.n_atoms)) 
-                for mat in atomicContacts:
-                    chunk_avg[mat.nonzero()] += mat.data
-                chunk_avg = csr_matrix(chunk_avg)
-                chunk_avg /= tr.n_frames
+                chunk_avg = avg_sparse(atomicContacts, self.n_atoms, n_frames=tr.n_frames)
                 traj_avg_list.append((chunk_avg, tr.n_frames))
                 total.append((chunk_avg, tr.n_frames))
-            traj_avg = np.zeros((self.n_atoms, self.n_atoms))  
-            n_frames = np.sum(elt[1] for elt in traj_avg_list)
-            for mat, fact in traj_avg_list:
-                traj_avg[mat.nonzero()] += mat.data*(fact/n_frames)
+            traj_avg = avg_sparse(traj_avg_list, self.n_atoms)
             if output != None:
                 save_npz('{0}_{1}.npz'.format(output, j+1), csr_matrix(traj_avg))
                 
-        self.n_frames = np.sum([elt[1] for elt in total])
-        for mat, fact in total:
-            self.atomic_avg[mat.nonzero()] += mat.data*(fact/self.n_frames)
+        self.atomic_avg = avg_sparse(total, self.n_atoms)
         if output:
             save_npz(output, csr_matrix(self.atomic_avg))
 
@@ -98,6 +132,7 @@ class AtomicNetMaker():
 
 def create_atomic_multi(traj_list, topo_list, name_list, output_folder, selection='protein', cutoff=5, chunk=1000):
     output_atomic_list = [jn(output_folder, '{0}.anpy'.format(name)) for name in name_list]
+    mkdir(output_folder, exist_ok=True)
     for traj, topo, output_atomic in zip(traj_list, topo_list, output_atomic_list):
         AtomicNetMaker(traj, topo, selection, cutoff, chunk, output_atomic)
 

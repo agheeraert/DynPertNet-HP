@@ -1,6 +1,6 @@
 fetch 1GPWC 1GPWD
 remove !(polymer)
-run ~/DynPertNet-HP/drawNetwork.py
+
 set_view (\
     -0.091599651,    0.961403608,    0.259411007,\
     -0.907361209,    0.026737407,   -0.419488847,\
@@ -9,4 +9,6 @@ set_view (\
    -28.106067657,   12.463504791,   74.449974060,\
    165.861480713,  250.555084229,   20.000000000 )
    
-drawNetwork('apo.npz', 'prfar.npz', robust_compo=True, threshold=6, label_compo=True)
+cd ~/landslide/RESULTS/GUIDELINES/DYN2_RESULTS/
+run ~/DynPertNet-HP/drawNetwork.py
+drawNetwork('apo.npz', 'prfar.npz', robust_compo=True, color_by_compo=True, label_compo='IGPS')

@@ -1,4 +1,3 @@
-from numpy.core.fromnumeric import nonzero
 from pymol import cmd, stored
 from pymol.cgo import *
 from pymol.vfont import plain
@@ -7,12 +6,15 @@ from Bio.PDB.Polypeptide import aa1, aa3
 import pickle as pkl
 import pickle5 as pkl5
 import numpy as np
+import seaborn as sns
 from pymol.selecting import select
 from pymol.viewing import label
+from sklearn.cluster import Birch
 from scipy.sparse import csr_matrix, load_npz, dok_matrix
 from os.path import basename
 three2one = dict(zip(aa3, aa1))
 #letter2id = dict(zip([chr(ord('A') + i) for i in range(26)], list(map(str, range(26)))))
+IGPS_mapping = {'𝘧β1': '𝘧β1', '𝘧β2': 'Loop1', '𝘧α1': '𝘧α1', '𝘧β3': '𝘧β2', '𝘧α2': '𝘧α2', '𝘧β4': '𝘧β3', '𝘧α3': '𝘧α3', '𝘧β5': '𝘧β4', '𝘧α4': "𝘧α4'", '𝘧α5': '𝘧α4', '𝘧β6': '𝘧β5', '𝘧β7': "𝘧β5'", '𝘧β8': "𝘧β5'-𝘧α5", '𝘧α6': '𝘧α5', '𝘧β9': '𝘧β6', '𝘧α7': '𝘧α6', '𝘧β10': '𝘧β7', '𝘧α8': '𝘧α7', '𝘧β11': '𝘧β8', '𝘧α9': '𝘧β8-fα8', '𝘧α10': '𝘧α8', '𝘨β1': '𝘨β1', '𝘨α1': '𝘨α1', '𝘨β2': '𝘨β2', '𝘨β3': '𝘨β3', '𝘨α2': '𝘨α2', '𝘨α3': "𝘨α2'", '𝘨β4': '𝘨β4', '𝘨α4': '𝘨α3', '𝘨β5': '𝘨β5', '𝘨β6': '𝘨β7', '𝘨β7': "𝘨β8'", '𝘨β8': '𝘨β8', '𝘨α5': '𝘨β8-𝘨β9', '𝘨β9': '𝘨β9', '𝘨β10': '𝘨β10', '𝘨β11': '𝘨β11', '𝘨α6': '𝘨α4', '𝘧Head': '𝘧Head', '𝘨Head': '𝘨Head', '𝘨Tail': '𝘨Tail', '𝘨β11-𝘨α6': '𝘨β11-𝘨α4', '𝘨β10-𝘨β11': '𝘨β10-𝘨β11', '𝘨β9-𝘨β10': '𝘨β9-𝘨β10', '𝘨α5-𝘨β9': '𝘨β8-𝘨β9', '𝘨β8-𝘨α5': '𝘨β8-𝘨β9', '𝘨β7-𝘨β8': '𝘨β8', '𝘨β6-𝘨β7': '𝘨β7-𝘨β8', '𝘨β5-𝘨β6': '𝘨β6-𝘨β7', '𝘨α4-𝘨β5': '𝘨β5-𝘨β6', '𝘨α3-𝘨β4': '𝘨α2-𝘨β4', '𝘨α2-𝘨α3': "𝘨α2-𝘨α2'", '𝘨β3-𝘨α2': 'oxyanion strand', '𝘨β2-𝘨β3': '𝘨β2-𝘨β3', '𝘨α1-𝘨β2': 'Ω-loop', '𝘨β1-𝘨α1': '𝘨β1-𝘨α1', '𝘧Tail': '𝘧Tail', '𝘧α9-𝘧α10': "𝘧β8-𝘧α8'", '𝘧α8-𝘧β11': '𝘧α7-𝘧β8', '𝘧β10-𝘧α8': '𝘧β7-𝘧α7', '𝘧α7-𝘧β10': '𝘧α6-𝘧β7', '𝘧β9-𝘧α7': '𝘧β6-𝘧α6', '𝘧α6-𝘧β9': '𝘧α5-𝘧β6', '𝘧β7-𝘧β8': '𝘧β5-𝘧α5', '𝘧β6-𝘧β7': "𝘧β5-𝘧β5'", '𝘧α5-𝘧β6': '𝘧α4-𝘧β5', '𝘧α4-𝘧α5': "𝘧α4'-𝘧α4", '𝘧α3-𝘧β5': '𝘧α3-𝘧β4', '𝘧β4-𝘧α3': '𝘧β3-𝘧α3', '𝘧α2-𝘧β4': '𝘧α2-𝘧β3', '𝘧β3-𝘧α2': '𝘧β2-𝘧α2', '𝘧α1-𝘧β3': '𝘧α1-𝘧β2', '𝘧β2-𝘧α1': 'Loop1', '𝘧β1-𝘧β2': 'Loop1'}
 
 def load(path):
     extension = path.split('.')[-1]
@@ -34,7 +36,7 @@ def create_top(selection, top):
     n_residues = top.subset(top.select('protein')).n_residues
     selection = selection.replace("not hydrogen", "!(name =~'H.*')")        
     indexes = top.select(selection)
-    top_mat = np.zeros((n_atoms, n_residues))
+    top_mat = dok_matrix((n_atoms, n_residues))
     for atom in top.atoms:
         if atom.index in indexes:
             top_mat[atom.index, atom.residue.index] = 1
@@ -65,15 +67,24 @@ def get_connected_components(pertmat):
     return connected_components[:-1]
 
 
-def drawHydroPolar(path1, path2, threshold=0, edge_norm=None, scale_norm=True, norm_expected=False, **kwargs):
+def drawHydroPolar(path1, path2, threshold=0, edge_norm=None, scale_norm=True, norm_expected=False, fromstruct=None, **kwargs):
 
     if norm_expected:
         scale_norm = False
 
-    cmd.select("hydrophobic", "(elem C or (all within 2 of elem C) and elem H)")
-    cmd.select("polar", "not hydrophobic")
+    if fromstruct == None:
+        cmd.select("hydrophobic", "(elem C or (all within 2 of elem C) and elem H)")
+        cmd.select("polar", "not hydrophobic")
+    else:
+        cmd.load(fromstruct, 'struct')
+        cmd.select("hydrophobic", "struct and (elem C or (all within 2 of elem C) and elem H)")
+        cmd.select("polar", "not hydrophobic and struct")
+
     hydro = [elt[1] for elt in cmd.index(selection="hydrophobic")]
     polar = [elt[1] for elt in cmd.index(selection="polar")]
+
+    if fromstruct != None:
+        cmd.delete('struct')
 
     normalization_factor = len(hydro)**2/len(polar)**2
 
@@ -112,21 +123,21 @@ def drawHydroPolar(path1, path2, threshold=0, edge_norm=None, scale_norm=True, n
  
 
 def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2=None,
-                r=1, edge_norm=None, alpha=0.5, mutations=False, sum=False,
+                r=1, edge_norm=None, alpha=0.5, mutations=False, align_with = None, 
                 node_color=(0.6, 0.6, 0.6), edge_color1 = (0, 0, 1),
-                edge_color2 = (1, 0, 0), labelling='0', norm_expected=False,
+                edge_color2 = (1, 0, 0), labeling='0', norm_expected=False,
                 threshold=0, topk=None, max_compo=None, mean_vp=None, 
                 around=None, keep_previous=False, robust_compo=False,
-                label_compo=False, auto_patch=True,
-                name1 = None, name2 = None, name_nodes='nodes'):
+                label_compo=None, auto_patch=True, printall=False, sum=False,
+                color_by_compo=False, color_by_group=False, show_top_group=None,
+                name1 = None, name2 = None, name_nodes='nodes', userSelection='all'):
     '''
     Draws a NetworkX network on the PyMol structure
     '''
 
-    #Initialization of labelling variables and retreieving residue XYZ positions
-    userSelection = "all"
+    #Initialization of labeling variables and retreieving residue XYZ positions
     if not keep_previous:
-        cmd.delete('*nodes *edges')
+        cmd.delete('*nodes *edges Component* Group*')
         cmd.label(selection=userSelection, expression="")
     # Building position -- name correspondance
     stored.posCA = []
@@ -142,23 +153,80 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
     node2CA = dict(zip(stored.labels, stored.posCA))
 
     #Secondary Structure labels
-    sses = []
-    currentSS, currentChain = stored.ss[0], stored.labels[0][-1]
-    if currentSS == '':
-        currentSS = 'L'
-    counters = {'L': 1, 'H': 1, 'S': 1}
-    for ss, label in zip(stored.ss, stored.labels):
-        if ss == '':
-            ss = 'L'
-        if currentSS != ss:
-            counters[currentSS] +=1
-        if currentChain != label[-1]:
-            for counter in counters: counters[counter] = 1
-        sses.append(label[-1]+ss+str(counters[ss]))
-        currentSS = ss
-        currentChain = label[-1]
-    print(sses)
-    node2SS = dict(zip(stored.labels, sses))
+    prevSS, prevChain = None, None
+    counters = {'': 0, 'H': 0, 'S': 0, 'L': 0}
+    node2SS = dict(zip(stored.labels, stored.ss))
+    SS2nodelist = {}
+    putflag = lambda X: 'U' if X in ['', 'L'] else X
+    for label in node2SS:
+        ss = node2SS[label]
+        chain = label[-1]
+        if prevChain != chain:
+            for counter in counters: counters[counter] = 0
+        if prevSS != ss:
+            counters[ss] +=1
+        labss = putflag(ss)+str(counters[ss])+':'+chain
+        if labss in SS2nodelist:
+            SS2nodelist[labss].append(label)
+        else:
+            SS2nodelist[labss] = [label]
+        prevSS = ss
+        prevChain = chain
+
+    prevkey, prevChain = None, None
+    order = []
+    keys = list(SS2nodelist.keys())
+
+    for key in keys:
+        if prevChain != key.split(':')[-1]:
+            prevkey = None
+        if key[0] == 'U':
+            if prevkey == None:
+                newkey = 'Head:'+key.split(':')[-1]
+            else:
+                newkey = 'U'+prevkey
+            SS2nodelist[newkey] = SS2nodelist.pop(key)
+            order.append(newkey)
+        else:
+            order.append(key)
+        prevkey = key
+        prevChain = key.split(':')[-1]
+    prevkey = None
+    final = []
+    for key in order[::-1]:
+        if prevChain != key.split(':')[-1]:
+            prevkey = None
+        if key[0] == 'U':
+            if prevkey == None:
+                newkey = 'Tail:'+key.split(':')[-1]
+            else:
+                newkey = '{}-{}'.format(key[1:], prevkey)
+            SS2nodelist[newkey] = SS2nodelist.pop(key)
+            final.append(newkey)
+        else:
+            final.append(key)
+        prevkey = key
+        prevChain = key.split(':')[-1]
+    # ss_dict = dict(zip(keys, final[::-1]))
+    mapss = {}
+    for key in final:
+        newkey = key.replace('S', 'β').replace('H', 'α').replace('αead', 'Head')
+        if label_compo == 'IGPS':
+            _ = []
+            for elt in newkey.split('-'):    
+                if elt.split(':')[1] in ['A', 'C', 'E']:
+                    _.append('𝘧{}'.format(elt.split(':')[0]))
+                elif elt.split(':')[1] in ['B', 'D', 'F']:
+                    _.append('𝘨{}'.format(elt.split(':')[0]))
+            newkey = '-'.join(_)
+            mapss[key] = IGPS_mapping[newkey]            
+        else:
+            mapss[key] = newkey     
+
+    for ss in SS2nodelist:
+        for node in SS2nodelist[ss]:
+            node2SS[node] = mapss[ss]
+
 
     #Loading external data
     mat1, mat2 = list(map(load, [path1, path2]))
@@ -179,24 +247,37 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
     #Creating topology matrices for each selection
     topg1, topd1 = [create_top(sel, top1) for sel in sels]
     topg2, topd2 = [create_top(sel, top2) for sel in sels]
-
     #From atomic to residual contacts and perturbation network computation
     mat1 = (mat1 @ topd1).transpose() @ topg1
     mat2 = (mat2 @ topd2).transpose() @ topg2
     #Apply expected norm if necessary
     if norm_expected:
-        ones1 = np.ones([topg1.shape[0]]*2)
-        ones2 = np.ones([topg2.shape[0]]*2)
-#        mat1 /= (ones1 @ topd1).transpose() @ topg1
-#        mat2 /= (ones2 @ topd2).transpose() @ topg2
-        mat1 = divide_expected(mat1, (ones1 @ topd1).transpose() @ topg1)
-        mat2 = divide_expected(mat2, (ones2 @ topd2).transpose() @ topg2)
+        exp1 = (topd1.sum(axis=1).transpose() @ topd1).transpose() @ (topg1.sum(axis=1).transpose() @ topg1)
+        exp2 = (topd2.sum(axis=1).transpose() @ topd2).transpose() @ (topg2.sum(axis=1).transpose() @ topg2)
+        mat1 = divide_expected(mat1, exp1)
+        mat2 = divide_expected(mat2, exp2)
         mat1, mat2 = list(map(csr_matrix, [mat1, mat2]))
+
+    if align_with != None:
+        cmd.align(userSelection, align_with, object='aln')
+        raw_aln = cmd.get_raw_alignment('aln')
+        order_string = [idx[0] for idx in raw_aln[-1]]
+        mat_shapes = [X.shape[0] for X in [mat1, mat2]]
+        if order_string[0] == align_with:
+            mat_shapes = mat_shapes[::-1]
+        trans_mat = dok_matrix(tuple([cmd.count_atoms(X) for X in order_string]))
+        for idx1, idx2 in raw_aln:
+            trans_mat[idx1[1]-1, idx2[1]-1] = 1
+        trans_mat = csr_matrix(trans_mat)
+        top_t1, top_t2 = [create_top('name CA', top) for top in [top1, top2]]
+        trans_res = (trans_mat @ top_t1).transpose() @ top_t2
+        mat2 = trans_res @ (mat2 @ trans_res.transpose())
+        print(mat2.shape, mat1.shape)
+
     pertmat = mat2 - mat1
 
     pertmat.setdiag(0)
     pertmat.eliminate_zeros()
-
     
     net = nx.from_scipy_sparse_matrix(pertmat)
 
@@ -212,13 +293,12 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
     get_chain = lambda X: chain_names[(X.chain.index % len(chain_names))]
     res2str = lambda X: t2o(X.name)+str(X.resSeq+offset)+':'+get_chain(X)
     id2label = {i: res2str(res) for i, res in enumerate(top1.residues)}
-
-    #Relabelling network
+    #Relabeling network
     net = nx.relabel_nodes(net, id2label)
 
     #Auto_patching network labels
     if not all(elem in node2CA for elem in net.nodes()):
-        print('PDB structure and topology labelling not matching.')
+        print('PDB structure and topology labeling not matching.')
         if auto_patch:
             print('Attempting to auto-patch residue names. (this can be disabled with auto_patch=False)')
             if len(node2CA.keys()) == len(net.nodes()):
@@ -227,9 +307,10 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
             else:
                 print("Auto-patching not working, please try on a different .pdb")
 
+
     #Output topK if necessary
     if type(topk) == int:
-        limit_weight = np.sort([abs(net.edges[(u, v)]['weight']) for u, v in net.edges])[::-1][:topk]     
+        limit_weight = np.sort([abs(net.edges[(u, v)]['weight']) for u, v in net.edges])[::-1][topk] 
         threshold = limit_weight
 
     if max_compo or mean_vp or robust_compo:
@@ -284,36 +365,106 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
     cmd.set("cgo_sphere_quality", 4)
 
 
-    #Creating edges
+    #Norm edges
     if edge_norm == None:
         edge_norm = max([net.edges()[(u, v)]['weight'] for u, v in net.edges()])/r
-    obj1, obj2, nodelist = [], [], []
-    for u, v in net.edges():
-        radius = net[u][v]['weight']/edge_norm
-        if abs(net[u][v]['weight']) >= threshold:
-            if 'color' in net[u][v]: 
-                if net[u][v]['color'] == 'r':
-                    obj1+=[CYLINDER, *node2CA[u], *node2CA[v], radius, *edge_color1, *edge_color1]
+
+    #Function to name edges
+    def name_edges(name, path):
+        if name == None:
+            return '.'.join(basename(path).split('.')[:-1])
+        return name
+    
+    #Default edge coloring   
+    if not color_by_compo and not color_by_group:
+        obj1, obj2, nodelist = [], [], []
+        for u, v in net.edges():
+            radius = net[u][v]['weight']/edge_norm
+            if abs(net[u][v]['weight']) >= threshold:
+                if 'color' in net[u][v]: 
+                    if net[u][v]['color'] == 'r':
+                        obj1+=[CYLINDER, *node2CA[u], *node2CA[v], radius, *edge_color1, *edge_color1]
+                    else:
+                        obj2+=[CYLINDER, *node2CA[u], *node2CA[v], radius, *edge_color2, *edge_color2]
                 else:
-                    obj2+=[CYLINDER, *node2CA[u], *node2CA[v], radius, *edge_color2, *edge_color2]
-            else:
-                if net[u][v]['weight'] <= 0:
-                    obj1+=[CYLINDER, *node2CA[u], *node2CA[v], radius, *edge_color1, *edge_color1]
-                else:
-                    obj2+=[CYLINDER, *node2CA[u], *node2CA[v], radius, *edge_color2, *edge_color2]
-            nodelist+=[u, v]
+                    if net[u][v]['weight'] <= 0:
+                        obj1+=[CYLINDER, *node2CA[u], *node2CA[v], radius, *edge_color1, *edge_color1]
+                    else:
+                        obj2+=[CYLINDER, *node2CA[u], *node2CA[v], radius, *edge_color2, *edge_color2]
+                nodelist+=[u, v]
+        name1, name2 = map(name_edges, [name1, name2], [path1, path2])
+        cmd.load_cgo(obj1, name1+'_edges')
+        cmd.load_cgo(obj2, name2+'_edges')
 
-    #Creating nodes
-    obj=[COLOR, *node_color]
-    nodelist = set(nodelist)
-    selnodes = ''.join([node2id[u] for u in nodelist])[4:]
-    for u in nodelist:
-        x, y, z = node2CA[u]
-        obj+=[SPHERE, x, y, z, r]
+        #Drawing nodes 
+        obj=[COLOR, *node_color]
+        nodelist = set(nodelist)
+        selnodes = ''.join([node2id[u] for u in nodelist])[4:]
+        for u in nodelist:
+            x, y, z = node2CA[u]
+            obj+=[SPHERE, x, y, z, r]
 
+        cmd.load_cgo(obj, name_nodes)
+    
+    #Coloring by components
+    elif color_by_compo:
+        components_list = [net.subgraph(c).copy() for c in nx.connected_components(net)]
+        compo_size = [len(c.edges()) for c in components_list]
+        ranking = np.argsort(compo_size)[::-1]
+        colors = sns.color_palette("husl", n_colors=len(components_list))
+        selnodes = ''
+        for i, rank in enumerate(ranking):
+            color, compo = colors[rank], components_list[rank]
+            _obj, nodelist = [], []
+            for u, v in compo.edges():
+                radius = net[u][v]['weight']/edge_norm
+                if abs(net[u][v]['weight']) >= threshold:
+                    _obj+=[CYLINDER, *node2CA[u], *node2CA[v], radius, *color, *color]
+                    nodelist += [u, v]
+#            cmd.load_cgo(_obj, 'Component{}_edges'.format(i+1))
+            _obj+=[COLOR, *node_color]
+            nodelist = set(nodelist)
+            selnodes += ''.join([node2id[u] for u in nodelist])[4:]
+            for u in nodelist:
+                x, y, z = node2CA[u]
+                _obj+=[SPHERE, x, y, z, r]
+            cmd.load_cgo(_obj, 'Component{}'.format(i+1))   
+    else:
+        weights = np.array([abs(net[u][v]['weight']) for u, v in net.edges()]).reshape(-1, 1)
+        birch = Birch(n_clusters=None).fit(weights)
+        labels = birch.predict(weights)
+        ordered_labels = labels[np.argsort(pertmat.data)]
+        _, idx = np.unique(ordered_labels, return_index=True)
+        mapping = dict(zip(ordered_labels[np.sort(idx)], np.sort(np.unique(ordered_labels))))
+        i2color =  dict(zip(ordered_labels[np.sort(idx)], sns.color_palette("husl", len(np.unique(ordered_labels)))))
+        selnodes = ''
+        if show_top_group == None:
+            show_top_group = len(mapping.keys())
+        
+        for j, i in enumerate(list(mapping.keys())[:show_top_group]):
+            _obj, nodelist = [], []
+            _net = net.copy()
+            to_remove_edges = [(u, v) for j, (u, v) in enumerate(net.edges()) if labels[j] != i]
+            _net.remove_edges_from(to_remove_edges)
+            _net.remove_nodes_from(list(nx.isolates(_net)))
+            for u, v in _net.edges():
+                radius = net[u][v]['weight']/edge_norm
+                if abs(net[u][v]['weight']) >= threshold:
+                    _obj+=[CYLINDER, *node2CA[u], *node2CA[v], radius, *i2color[j], *i2color[j]]
+                    nodelist += [u, v]
+#            cmd.load_cgo(_obj, 'Component{}_edges'.format(i+1))
+            _obj+=[COLOR, *node_color]
+            nodelist = set(nodelist)
+            selnodes += ''.join([node2id[u] for u in nodelist])[4:]
+            for u in nodelist:
+                x, y, z = node2CA[u]
+                _obj+=[SPHERE, x, y, z, r]
+            cmd.load_cgo(_obj, 'Group{}'.format(j+1)) 
 
-    #Creating text for labelling components
-    if label_compo:
+        
+
+    #Creating text for labeling components
+    if label_compo != None:
         objtxt = []
         axes = -np.array(cmd.get_view()[:9]).reshape(3,3)
         components_list = [net.subgraph(c).copy() for c in nx.connected_components(net)]
@@ -321,35 +472,30 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
         for i, j in enumerate(np.argsort(edges_len)[::-1]):
             c = components_list[j]
             sses = sorted(list(set([node2SS[node] for node in c])))
-            print('Component {}\n'.format(i+1), ' '.join(sses))
+            print('Component {}\n'.format(i+1), ', '.join(sses))
+            print('Vanishing point: {}'.format(np.max([abs(net[u][v]['weight']) for u, v in c.edges()])))
             pos = np.array(node2CA[next(c.__iter__())]) + (axes[0])
             cyl_text(objtxt, plain, pos, 'Component {}'.format(i+1), radius=0.1, color=[0, 0, 0], axes=axes)
+        for ss in SS2nodelist:
+            nodelist = SS2nodelist[ss] 
+            print(mapss[ss], ': ', ('{}--{}'.format(nodelist[0], nodelist[-1]) if len(nodelist)>1 else nodelist[0]))
 
 #        print(objtxt)
         cmd.set("cgo_line_radius", 0.03)
         cmd.load_cgo(objtxt, 'txt')
 
-    #Labelling
-    if labelling==1:
+    #labeling
+    if labeling==1:
         cmd.label(selection=selnodes, expression="t2o(resn)+resi")
-    if labelling==3:
+    if labeling==3:
         cmd.label(selection=selnodes, expression="resn+resi")
-
-    def name_edges(name, path):
-        if name == None:
-            return '.'.join(basename(path).split('.')[:-1])
-        return name
-
-    name1, name2 = map(name_edges, [name1, name2], [path1, path2])
-
-    #Drawing nodes and edges
-    cmd.load_cgo(obj, name_nodes)
-    cmd.load_cgo(obj1, name1+'_edges')
-    cmd.load_cgo(obj2, name2+'_edges')
 
     #Summing
     if sum:
         print('Sum of contacts lost: ', np.sum(pertmat))
+
+    if printall:
+        print([(u,v, net[u][v]) for u, v in net.edges()])
 
 
 cmd.extend("drawNetwork", drawNetwork)
