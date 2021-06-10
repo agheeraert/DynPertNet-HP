@@ -1,4 +1,6 @@
+delete all
 fetch 1GPWC 1GPWD
+color grey80, 1GPW*
 remove !(polymer)
 
 set_view (\
@@ -11,4 +13,11 @@ set_view (\
    
 cd ~/landslide/RESULTS/GUIDELINES/DYN2_RESULTS/
 run ~/DynPertNet-HP/drawNetwork.py
-drawNetwork('apo.npz', 'prfar.npz', robust_compo=True, color_by_compo=True, label_compo='IGPS')
+
+drawHydroPolar('apo.npz', 'prfar.npz')
+#drawNetwork('apo.npz', 'prfar.npz', compo_diam=3, load_cc='cc.npy', label_compo='IGPS')
+#disable Component*
+
+#drawNetwork('apo.npz', 'prfar.npz', max_compo=True, load_cc='cc.npy', label_compo='IGPS')
+
+#drawNetwork('apo.npz', 'prfar.npz', robust_compo=True, color_by_compo=True, label_compo='IGPS')
