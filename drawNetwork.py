@@ -214,7 +214,7 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
                 label_compo='', auto_patch=True, printall=False, sum=False, n_clusters=None,
                 color_by_compo=False, color_by_group=False, show_top_group=None,
                 name1 = None, name2 = None, name_nodes='nodes', userSelection='all',
-                fromstruct=None, color_by_contact_type=False):
+                fromstruct=None, color_by_contact_type=False, standard_and_expected=None):
     '''
     Draws a NetworkX network on the PyMol structure
     '''
@@ -343,15 +343,13 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
         mat1, mat2 = list(map(csr_matrix, [mat1, mat2]))
 
     if align_with != None:
-        cmd.align(userSelection, align_with, object='aln')
+        cmd.align(align_with, userSelection, object='aln')
         raw_aln = cmd.get_raw_alignment('aln')
-        order_string = [idx[0] for idx in raw_aln[-1]]
-        mat_shapes = [X.shape[0] for X in [mat1, mat2]]
-        if order_string[0] == align_with:
-            mat_shapes = mat_shapes[::-1]
+        cmd.hide('cgo', 'aln')
+        order_string = [idx[0] for idx in raw_aln[-1]][::-1]
         trans_mat = dok_matrix(tuple([cmd.count_atoms(X) for X in order_string]))
         for idx1, idx2 in raw_aln:
-            trans_mat[idx1[1]-1, idx2[1]-1] = 1
+            trans_mat[idx2[1]-1, idx1[1]-1] = 1
         trans_mat = csr_matrix(trans_mat)
         top_t1, top_t2 = [create_top('name CA', top) for top in [top1, top2]]
         trans_res = (trans_mat @ top_t1).transpose() @ top_t2
@@ -406,6 +404,11 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
     #Output topK if necessary
     if type(topk) == int:
         limit_weight = np.sort([abs(net.edges[(u, v)]['weight']) for u, v in net.edges])[::-1][topk] 
+        threshold = limit_weight
+
+    if type(standard_and_expected) == int:
+        limit_weight = np.sort([abs(net.edges[(u, v)]['weight']) for u, v in net.edges])[::-1][standard_and_expected]
+        relabel_net2 = dict(enumerate(net.nodes()))
         threshold = limit_weight
 
 
@@ -508,7 +511,50 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
             return '.'.join(basename(path).split('.')[:-1])
         return name
 
-    if color_by_contact_type:
+    if type(standard_and_expected) == int:
+        exp1 = (topd1.sum(axis=1).transpose() @ topd1).transpose() @ (topg1.sum(axis=1).transpose() @ topg1)
+        exp2 = (topd2.sum(axis=1).transpose() @ topd2).transpose() @ (topg2.sum(axis=1).transpose() @ topg2)
+        mat1 = divide_expected(mat1, exp1)
+        mat2 = divide_expected(mat2, exp2)
+        mat1, mat2 = list(map(csr_matrix, [mat1, mat2]))
+        net2 = nx.from_scipy_sparse_matrix(mat2-mat1)
+        net2 = nx.relabel_nodes(net2, relabel_net2)
+        limit_weight = np.sort([abs(net2.edges[(u, v)]['weight']) for u, v in net2.edges])[::-1][standard_and_expected] 
+        net2.remove_edges_from([(u, v) for u, v in net2.edges() if abs(net2[u][v]['weight']) < limit_weight])
+        net2.remove_nodes_from(list(nx.isolates(net2)))
+        colors = [(1, 1, 0), (0, 1, 1), (1, 0, 1)]
+        objs_inboth = []
+        objs_instd = []
+        objs_inexp = []
+        nodes = []
+        for u, v in net.edges():
+            radius = net[u][v]['weight']/edge_norm
+            if (u, v) in list(net2.edges()):
+                objs_inboth += [CYLINDER, *node2CA[u], *node2CA[v], radius, *colors[0], *colors[0]]
+            else:
+                objs_instd += [CYLINDER, *node2CA[u], *node2CA[v], radius, *colors[1], *colors[1]]
+            nodes += [u, v]
+        edge_norm2 = max([net2.edges()[(u, v)]['weight'] for u, v in net2.edges()])/r
+        for u, v in net2.edges():
+            radius = net2[u][v]['weight']/edge_norm2
+            if (u, v) not in list(net.edges()):
+                objs_inexp += [CYLINDER, *node2CA[u], *node2CA[v], radius, *colors[2], *colors[2]]
+            nodes += [u, v]
+
+        nodelist = set(nodes)
+        objs_nodes = [COLOR, *node_color]
+        for u in nodelist:
+                x, y, z = node2CA[u]
+                objs_nodes += [SPHERE, x, y, z, r]
+        selnodes = ''.join([node2id[u] for u in nodelist])[4:]
+        cmd.load_cgo(objs_inboth, 'in_both_edges') 
+        cmd.load_cgo(objs_instd, 'in_std_edges')
+        cmd.load_cgo(objs_inexp, 'in_exp_edges')
+        cmd.load_cgo(objs_nodes, 'nodes') 
+
+
+
+    elif color_by_contact_type:
         expected_matrices = get_expected_type(atom_mat1, atom_mat2, top1, top2, fromstruct)
         name1, name2 = list(map(name_edges, [name1, name2], [path1, path2]))
         names = ['{0}_{1}'.format(name1, sel) for sel in ['hydro', 'polar', 'mixed']] + ['{0}_{1}'.format(name2, sel) for sel in ['hydro', 'polar', 'mixed']]
@@ -520,7 +566,6 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
             id_u, id_v = label2id[u], label2id[v]
             values = list(map(lambda _mat: _mat[id_v, id_u], expected_matrices))
             type_of_contact = np.argmax(values)
-            print(values, type_of_contact, u, v)
             objs_dict[type_of_contact] += [CYLINDER, *node2CA[u], *node2CA[v], radius, *colors[type_of_contact], *colors[type_of_contact]]
             nodes_dict[type_of_contact] += [u, v]
         selnodes = ''
@@ -541,7 +586,11 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
         diameters = [nx.diameter(c) for c in components_list]
         ranking = np.argsort(diameters)[::-1]
         colors = sns.color_palette(palette, n_colors=len(components_list)+1)
-        colors.pop(-3)
+        for i, c in enumerate(colors):
+            if c[0] == c[1] == c[2]:
+                print(c)
+                colors.pop(i)
+                break
         selnodes = ''
         for i, rank in enumerate(ranking):
             color, compo = colors[rank], components_list[rank]

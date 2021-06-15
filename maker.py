@@ -25,8 +25,8 @@ from scipy.sparse import csr_matrix, save_npz, coo_matrix, dok_matrix
 
 def avg_sparse(list_of_matrices, size, matrix_generator=np.zeros, n_frames=None, size2=None):
     size2 = size if size2==None else size2
-    try:
-        avg = matrix_generator((size, size))
+    if max(size, size2) < 10000:
+        avg = matrix_generator((size, size), dtype=np.int)
         if type(list_of_matrices[0]) == tuple:
             n_frames = np.sum(elt[1] for elt in list_of_matrices) if n_frames==None else n_frames
             for mat, fact in list_of_matrices:
@@ -38,7 +38,7 @@ def avg_sparse(list_of_matrices, size, matrix_generator=np.zeros, n_frames=None,
         avg = csr_matrix(avg, dtype=np.float64)
         avg /= n_frames
         return avg
-    except MemoryError:
+    else:
         return avg_coo(list_of_matrices, size, n_frames=n_frames, size2=size2)
 
 def avg_coo(list_of_matrices, size, n_frames=None, size2=None):

@@ -1,25 +1,20 @@
 from maker import *
 from os.path import join as jn
-import matplotlib.pyplot as plt
-import pickle as pkl
-import mdtraj as md
-import numpy as np
-import MDAnalysis
-from MDAnalysis.analysis.rms import RMSF 
-from MDAnalysis.analysis import align
-import seaborn as sns
-
 
 INPUT_FOLDER = '/home/aria/landslide/MDRUNS/MUTANTS_COV/TRIMER'
 OUTPUT_FOLDER = '/home/aria/landslide/RESULTS/MUTANTS_COV/TRIMER'
 
 name_list= ['OR', 'SA']
-traj_list = [[jn(INPUT_FOLDER, 'spike{0}_ACE2_trimer_bound_test_chainABCDEF.dcd'.format(mutant))] for mutant in name_list]
-topo_list = [jn(INPUT_FOLDER, 'spike{0}_ACE2_trimer_bound_test_chainABCDEF.psf'.format(mutant)) for mutant in name_list]
+traj_list = [[jn(INPUT_FOLDER, 'spikeOR_ACE2_trimer_bound_300ns_stride100_nowat.dcd')], [jn(INPUT_FOLDER, 'spikeSA_ACE2_trimer_bound_440ns_stride100_nowat.dcd')]]
+topo_list = [jn(INPUT_FOLDER, 'spikeOR_ACE2_trimer_bound_nowat.psf'), jn(INPUT_FOLDER, 'spikeSA_ACE2_trimer_bound_nowat.psf')]
 output_top_list = [jn(OUTPUT_FOLDER, name) for name in name_list]
 
-create_atomic_multi(traj_list, topo_list, name_list, OUTPUT_FOLDER, chunk=20)
-save_top(traj_list, topo_list, name_list, output_top_list)
+create_atomic_multi(traj_list, topo_list, name_list, OUTPUT_FOLDER, chunk=8, save_top=True)
+
+# create_atomic_multi(traj_list, topo_list, name_list, OUTPUT_FOLDER, chunk=8, interface=['chainid 1', 'chainid 3', 'interface_13.npy'])
+# create_atomic_multi(traj_list, topo_list, name_list, OUTPUT_FOLDER, chunk=8, interface=['chainid 1', 'chainid 4', 'interface_14.npy'])
+# create_atomic_multi(traj_list, topo_list, name_list, OUTPUT_FOLDER, chunk=8, interface=['chainid 0', 'chainid 3', 'interface_03.npy'])
+# create_atomic_multi(traj_list, topo_list, name_list, OUTPUT_FOLDER, chunk=8, interface=['chainid 0', 'chainid 4', 'interface_04.npy'])
 
 
 # input_list = [jn(OUTPUT_FOLDER, '{0}_0.p'.format(name)) for name in name_list]
