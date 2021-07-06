@@ -1,8 +1,9 @@
-from os import makedirs as mkdir
+from os import makedirs as mkdir, replace
 from os.path import join as jn, isfile, basename
 import shutil
 import tarfile
 import pickle as pkl
+from itertools import product
 from tqdm import tqdm
 import numpy as np
 from scipy.spatial import cKDTree
@@ -69,7 +70,7 @@ def create_topmat(selection, top, subselection='protein'):
     n_residues = top.subset(top.select(subselection)).n_residues
     selection = selection.replace("not hydrogen", "!(name =~'H.*')")
     indexes = top.select(selection)
-    top_mat = dok_matrix((n_atoms, n_residues), dtype=np.bool)
+    top_mat = dok_matrix((n_atoms, n_residues), dtype=np.ushort)
     for atom in top.atoms:
         if atom.index in indexes:
             top_mat[atom.index, atom.residue.index] = 1
@@ -103,7 +104,7 @@ def inverse_sparse(mat):
 
 
 class AtomicNetMaker():
-    def __init__(self, trajs, topo=None, selection='protein', cutoff=5, chunk=10000, output=None, all_frames=None, interface=None, save_top=True, ponderate=False):
+    def __init__(self, trajs, topo=None, selection='protein', cutoff=5, chunk=10, output=None, all_frames=None, interface=None, save_top=True, **kwargs):
         """Function creating the atomic contact network with a desired base selection in chunks
         Parameters: traj: str or list of str: path trajectories to load
         topo: str: path of topology to use
@@ -113,7 +114,6 @@ class AtomicNetMaker():
         #Passing some values to the class
         self.cutoff = cutoff
         self.all_frames = all_frames
-        self.ponderate = ponderate
         
         #Forcing basename to eventual output
         if output != None:
@@ -131,25 +131,46 @@ class AtomicNetMaker():
 
         #Initialize interface computation if applicable
         if type(interface) == list:
-            self.topg, self.topd = [create_topmat(sel, topology) for sel in interface[0:2]]
-            interface_sum = []
-            self.interfaced = True
+            if type(interface[0]) == list and type(interface[1] == list):
+                self.topg_list = [create_topmat(sel, topology) for sel in interface[0]]
+                self.topd_list = [create_topmat(sel, topology) for sel in interface[1]]
+                self.interfaced = 'l'
+                sel_strg = [sel.replace(' ', '_').replace('&', '').replace('|', '') for sel in interface[0]]
+                sel_strd = [sel.replace(' ', '_').replace('&', '').replace('|', '') for sel in interface[1]]
+                interface_names = list(product(sel_strg, sel_strd))
+                interface_names = [name[0]+name[1] for name in interface_names]
+                interface_sum = {name: [] for name in interface_names}
+                
+            else:
+                self.topg, self.topd = [create_topmat(sel, topology) for sel in interface[0:2]]
+                interface_sum = []
+
+            if interface[-1] == 'expected':
+                self.interfaced = 'e'
+                print('computing expected')
+            elif interface[-1] == 't':
+                self.interfaced = 't'
+                print('outputing total interface')
+            else:
+                self.interface = True
         else:
             self.interfaced = False
 
         #Initialise total average computation
+#       total = []
+#       self.atomic_avg = csr_matrix((self.n_atoms, self.n_atoms))
         total = []
-        self.atomic_avg = csr_matrix((self.n_atoms, self.n_atoms))
 
         for j, traj in enumerate(trajs):
             print('Treating traj {}'.format(traj))
             traj_avg_list = []
+            traj_avg = coo_matrix((self.n_atoms, self.n_atoms))
 
             if self.all_frames != None:
                 self.traj_output_folder = '{0}_{1}_frames'.format(output, j+1)
                 mkdir(self.traj_output_folder, exist_ok=True)
 
-            for n, tr in tqdm(enumerate(md.iterload(traj, top=topo, chunk=chunk))):
+            for n, tr in tqdm(enumerate(md.iterload(traj, top=topo, chunk=chunk, **kwargs))):
                 self.prev = n*chunk
                 #Slicing atoms of interest
                 if selection != 'all':
@@ -157,19 +178,26 @@ class AtomicNetMaker():
                 coords = tr.xyz
                 atomicContacts = []
                 self.queue = mp.Queue()
-                if self.interfaced:
+                if self.interfaced != False:
                     self.interface_queue = mp.Queue()
                 processes = [mp.Process(target=self.get_contacts, args=([coords[frame]], frame)) for frame in range(tr.n_frames)]
                 [p.start() for p in processes]
                 atomicContacts = [self.queue.get() for p in processes]
-                if self.interfaced:
+                if self.interfaced != False and self.interfaced != 'l':
                     interface_sum += [self.interface_queue.get() for p in processes]
+                elif self.interfaced == 'l':
+                    res_array = np.array([self.interface_queue.get() for p in processes]).transpose(1, 0, 2)
+                    for res_list, interface_name in zip(res_array, interface_names):
+                        interface_sum[interface_name] += res_list.tolist()
 
                 #Computing average atomic network from list of csr matrices
                 chunk_avg = avg_sparse(atomicContacts, self.n_atoms, n_frames=tr.n_frames)
                 traj_avg_list.append((chunk_avg, tr.n_frames))
-                total.append((chunk_avg, tr.n_frames))
-
+                #Check size of traj_avg
+                if len(traj_avg_list)*chunk >= 100:
+                    n_frames = np.sum([elt[1] for elt in traj_avg_list])
+                    traj_avg_list = [(avg_sparse(traj_avg_list, self.n_atoms, n_frames=n_frames), n_frames)]
+                
             #Tarball individual frames if applicable
             if self.all_frames == 'tar':
                 with tarfile.open('{0}.tar'.format(self.traj_output_folder), "w") as tar:
@@ -181,48 +209,75 @@ class AtomicNetMaker():
                 shutil.rmtree(self.traj_output_folder)
 
             #Average single trajectory file
-            if self.ponderate:
-                traj_avg = inverse_sparse(avg_sparse(traj_avg_list, self.n_atoms))
-            else:
-                traj_avg = avg_sparse(traj_avg_list, self.n_atoms)
+            n_frames = np.sum([elt[1] for elt in traj_avg_list])
+            traj_avg = avg_sparse(traj_avg_list, self.n_atoms)
             if output != None:
                 save_npz('{0}_{1}.npz'.format(output, j+1), csr_matrix(traj_avg))
+            total.append((traj_avg, n_frames))
+
+            if output and self.interfaced:
+                if self.interfaced == 'l':
+                    for interface_name in interface_names:
+                        contacts = np.array([elt[1] for elt in sorted(interface_sum[interface_name])])
+                        np.save('{0}_{1}_{2}'.format(output, interface_name, j), contacts)
+                    interface_sum = {name: [] for name in interface_names}
+                elif self.interfaced == 't':
+                    contacts = [value for (order, value) in sorted(interface_sum)]
+                    pkl.dump(contacts, open('{0}_{1}_{2}.npzl'.format(output, interface[2], j), 'wb'))
+                    interface_sum = []
+                else:
+                    contacts = np.array([value for (order, value) in sorted(interface_sum)])
+                    np.save('{0}_{1}_{2}'.format(output, interface[2], j), contacts)
+                    interface_sum = []
+                
 
         #Average all the trajectories
-        if self.ponderate:
-            self.atomic_avg = inverse_sparse(avg_sparse(total, self.n_atoms))
-        else:
-            self.atomic_avg = avg_sparse(total, self.n_atoms)
+        self.atomic_avg = avg_sparse(total, self.n_atoms)
         if output:
             save_npz(output, csr_matrix(self.atomic_avg))
         #
-        if output and self.interfaced:
-            contacts = np.array([value for (order, value) in sorted(interface_sum)])
-            np.save('{0}_interface_{1}'.format(output, interface[2]), contacts)
+
 
     def get_contacts(self, coord, frame):
         tree = cKDTree(coord[0])
-        if not self.ponderate:
-            pairs = tree.query_pairs(r=self.cutoff/10.) #Cutoff is in Angstrom but mdtraj uses nm
-            #Creating sparse CSR matrix
-            data = np.ones(len(pairs), dtype=np.bool)
-            pairs = np.array(list(pairs))
-            contacts = csr_matrix((data, (pairs[:,0], pairs[:,1])), shape=[self.n_atoms, self.n_atoms])
-            if self.all_frames:
-                save_npz(jn(self.traj_output_folder, 'frame{0}'.format(self.prev+frame)), contacts)
-            self.queue.put(contacts)
-        else:
-            distances = csr_matrix(tree.sparse_distance_matrix(tree, self.cutoff/10.))
-            #score = inverse_sparse(distances)
-            distances.eliminate_zeros()
-            if self.all_frames:
-                save_npz(jn(self.traj_output_folder, 'frame{0}'.format(self.prev+frame)), distances)
-            self.queue.put(distances)
-            contacts = distances
-        if self.interfaced:
+        pairs = tree.query_pairs(r=self.cutoff/10.) #Cutoff is in Angstrom but mdtraj uses nm
+        #Creating sparse CSR matrix
+        data = np.ones(len(pairs), dtype=np.ushort)
+        pairs = np.array(list(pairs))
+        contacts = csr_matrix((data, (pairs[:,0], pairs[:,1])), shape=[self.n_atoms, self.n_atoms])
+        if self.all_frames:
+            save_npz(jn(self.traj_output_folder, 'frame{0}'.format(self.prev+frame)), contacts)
+        self.queue.put(contacts)
+        # else:
+        #     distances = csr_matrix(tree.sparse_distance_matrix(tree, self.cutoff/10.))
+        #     #score = inverse_sparse(distances)
+        #     distances.eliminate_zeros()
+        #     if self.all_frames:
+        #         save_npz(jn(self.traj_output_folder, 'frame{0}'.format(self.prev+frame)), distances)
+        #     self.queue.put(distances)
+        #     contacts = distances
+        if self.interfaced == 'e':
+            exp = (self.topd.sum(axis=1).transpose() @ self.topd).transpose() @ (self.topg.sum(axis=1).transpose() @ self.topg)
+            mat = (contacts @ self.topd).transpose() @ self.topg
+            to_app = divide_expected(mat, exp)
+            self.interface_queue.put((frame+self.prev, np.sum(to_app)))
+        
+        elif self.interfaced == True:
             to_app = (contacts @ self.topd).transpose() @ self.topg
             self.interface_queue.put((frame+self.prev, np.sum(to_app)))
-            
+
+        elif self.interfaced == 'l':
+            res_list = []
+            for topg in self.topg_list:
+#                matg = contacts.dot(topg).transpose()
+                for topd in self.topd_list:
+                    c = contacts.copy()
+                    res_list.append([frame+self.prev, np.sum((c @ topd).transpose() @ topg)])
+            self.interface_queue.put(res_list)
+
+        elif self.interfaced == 't':
+            to_app = (contacts @ self.topd).transpose() @ self.topg
+            self.interface_queue.put((frame+self.prev, to_app))
         
 
 
