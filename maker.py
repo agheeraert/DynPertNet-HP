@@ -145,14 +145,15 @@ class AtomicNetMaker():
                 self.topg, self.topd = [create_topmat(sel, topology) for sel in interface[0:2]]
                 interface_sum = []
 
+            self.interfaced = True
+
             if interface[-1] == 'expected':
                 self.interfaced = 'e'
                 print('computing expected')
             elif interface[-1] == 't':
                 self.interfaced = 't'
                 print('outputing total interface')
-            else:
-                self.interface = True
+                
         else:
             self.interfaced = False
 

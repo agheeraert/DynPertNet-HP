@@ -317,8 +317,8 @@ def drawNetwork(path1, path2, sele=None, sele1=None, sele2=None, top1=None, top2
     atom_mat1, atom_mat2 = list(map(load, [path1, path2]))
     get_ext = lambda X: X.split('.')[-1]
     ext1, ext2 = list(map(get_ext, [path1, path2]))
-    top1 = load(path1.split('_')[0]+'.topy') if top1 == None else load(top1)
-    top2 = load(path2.split('_')[0]+'.topy') if top2 == None else load(top2)
+    top1 = load(path1.split('_')[0].split('.')[0]+'.topy') if top1 == None else load(top1)
+    top2 = load(path2.split('_')[0].split('.')[0]+'.topy') if top2 == None else load(top2)
 
     #Handling selections
     if sele != None:
